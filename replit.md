@@ -24,4 +24,29 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - `pnpm --filter @workspace/api-server run dev` — run API server locally
 
+## AI Audio Tab (cloned from Ai-Audio2 repo)
+
+The "Ai Audio" tab in `artifacts/srt-tools` is a full TTS editor cloned verbatim from https://github.com/2absolutetwo/Ai-Audio2 (originally the `notes-app` artifact in that repo).
+
+- **Backend** (`artifacts/api-server`):
+  - `POST /api/tts` — synthesizes MP3 audio with `msedge-tts` (Microsoft Edge online voices, free, no API key). Body: `{ text, voice? }`. Auto-detects `bn-BD-NabanitaNeural` for Bangla text and `en-US-AriaNeural` for English when `voice` is omitted. Max 5000 chars.
+  - `GET /api/tts/voices` — returns the full list of available Edge voices (cached in memory).
+- **Frontend** (`artifacts/srt-tools/src`):
+  - `tabs/AiAudioTab.tsx` mounts `<Editor />`.
+  - `components/editor/note-editor.tsx` — main editor (chunked synthesis, playback queue, MP3 download, undo, copy/cut/paste, history).
+  - `components/editor/voice-picker.tsx` & `favorite-voices-button.tsx` — language → voice selector with starred favorites.
+  - `hooks/use-favorite-voices.ts` — favorite voices stored in `localStorage` under key `favorite-voices`.
+  - Sonner `<Toaster />` is mounted in `main.tsx` for editor notifications.
+
+## Cutting++ Tab — Batch Hardening (200–250 file batches)
+
+`artifacts/srt-tools/src/tabs/CuttingPlusPlusTab.tsx` is hardened for very large batches:
+
+- **No per-file metadata stalls**: `addPoolFiles` no longer calls `getMediaDuration` or `setPool` per file. Cards read durations lazily via `handleAudio` / `handleVideo`.
+- **Auto-archive batching** (`BATCH_SIZE_PP = 25`): after every 25 successful cuts, finished outputs are streamed into a single accumulating ZIP (`archiveZipRef`) and the per-card blob URL is revoked. The card flips to an "Archived in ZIP" green badge so RAM doesn't grow with the batch.
+- **State churn fix**: `setCardState` is now bulk + rAF-debounced via `pendingUpdatesRef`; the runtime reads the live `cardStatesRef` instead of the throttled React state. Cards expose `markArchived()` on their imperative handle.
+- **Download flow**: `handleDownloadZip` combines the accumulated archive ZIP + still-live merged outputs into one final ZIP. `clearAllCards` resets archive state.
+
+User explicitly skipped the counter-accuracy fix ("D"); only A + B + C are implemented.
+
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
