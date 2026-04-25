@@ -65,6 +65,14 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    headers: {
+      // Required so ffmpeg.wasm multi-threaded core can use SharedArrayBuffer.
+      // `credentialless` is more permissive than `require-corp`: it lets us
+      // load cross-origin assets (unpkg, etc.) without needing CORP headers
+      // on those responses, as long as we don't send credentials.
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "credentialless",
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],
@@ -80,5 +88,9 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "credentialless",
+    },
   },
 });

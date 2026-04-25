@@ -62,10 +62,39 @@ const PoolContext = createContext<{
 const POOL_MIME_ID = "application/x-pool-id";
 const POOL_MIME_KIND = "application/x-pool-kind";
 
-const FFMPEG_BASE_URL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
+// Self-host ffmpeg core files under /ffmpeg/{st,mt}/ so they load
+// same-origin and don't need cross-origin fetch headers under COEP.
+// Base path is respected so the artifact-prefix routing keeps working.
+function ffmpegBaseUrl(mt: boolean): string {
+  const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+  return `${base}/ffmpeg/${mt ? "mt" : "st"}`;
+}
 const INITIAL_CARDS = 6;
 
-// Recycle the ffmpeg engine every N successful jobs to keep WASM heap
+// Multi-threaded ffmpeg core needs SharedArrayBuffer + cross-origin
+// isolation (COOP/COEP). When available, libx264 encoding uses all CPU
+// cores and runs ~2-4x faster than the single-threaded core.
+function canUseMtCore(): boolean {
+  if (typeof window === "undefined") return false;
+  if (typeof SharedArrayBuffer === "undefined") return false;
+  return Boolean((window as unknown as { crossOriginIsolated?: boolean })
+    .crossOriginIsolated);
+}
+
+// Pool of independent ffmpeg engines so cards can encode in parallel.
+// Each engine is single-job-at-a-time (ffmpeg.wasm limitation), so the
+// pool size determines max concurrent cards. With short 12-15s clips,
+// 2 parallel engines roughly doubles throughput without RAM blowup.
+// On low-core machines we fall back to 1 to avoid CPU thrashing.
+function pickPoolSize(): number {
+  if (typeof navigator === "undefined") return 2;
+  const cores = navigator.hardwareConcurrency || 4;
+  if (cores <= 2) return 1;
+  return 2;
+}
+const ENGINE_POOL_SIZE = pickPoolSize();
+
+// Recycle each engine every N successful jobs to keep WASM heap
 // healthy. Cutting++ does ~3 exec + 2 writeFile + 2 readFile per job
 // (much heavier than Cutting+), so we recycle more aggressively.
 const RECYCLE_EVERY_PP = 5;
@@ -260,69 +289,141 @@ function VideoCutterApp({
   incomingAudioFiles?: IncomingAudioFiles;
   incomingVideoFiles?: { files: File[]; key: number };
 }) {
-  const ffmpegRef = useRef<FFmpeg | null>(null);
   const [ffmpegReady, setFfmpegReady] = useState(false);
   const [ffmpegLoading, setFfmpegLoading] = useState(true);
   const [ffmpegError, setFfmpegError] = useState<string>("");
 
-  const progressCbRef = useRef<((p: number) => void) | null>(null);
-  const jobsSinceRecycleRef = useRef(0);
-  const recyclingRef = useRef<Promise<FFmpeg> | null>(null);
+  // Whether we're using the multi-threaded core. Decided once at boot,
+  // based on cross-origin isolation. Falls back automatically if MT load
+  // fails (e.g. unpkg blocked).
+  const useMtRef = useRef<boolean>(canUseMtCore());
 
-  // Build a fresh ffmpeg engine and wire up progress handler.
-  // Used for first load AND every recycle.
-  const loadFreshFFmpeg = async (): Promise<FFmpeg> => {
+  // Each engine slot is an independent ffmpeg.wasm instance. Cards lease
+  // a slot for the duration of one runCut, then release it. Each slot
+  // has its own progress callback so concurrent jobs don't trample each
+  // other's progress bars.
+  type EngineSlot = {
+    id: number;
+    ffmpeg: FFmpeg | null;
+    jobsSinceRecycle: number;
+    busy: boolean;
+    loading: Promise<FFmpeg> | null;
+    progressCb: ((p: number) => void) | null;
+  };
+
+  const slotsRef = useRef<EngineSlot[]>([]);
+  const slotWaitersRef = useRef<Array<() => void>>([]);
+
+  // Build a fresh ffmpeg engine bound to a specific slot's progress
+  // callback. Used for first load AND every recycle. Tries MT core first
+  // (when isolated); on failure falls back to single-threaded core.
+  const loadFreshFFmpeg = async (slot: EngineSlot): Promise<FFmpeg> => {
     const ffmpeg = new FFmpeg();
     ffmpeg.on("progress", ({ progress }) => {
       const p = Math.min(100, Math.max(0, Math.round(progress * 100)));
-      progressCbRef.current?.(p);
+      slot.progressCb?.(p);
     });
-    const coreURL = await toBlobURL(
-      `${FFMPEG_BASE_URL}/ffmpeg-core.js`,
-      "text/javascript",
-    );
-    const wasmURL = await toBlobURL(
-      `${FFMPEG_BASE_URL}/ffmpeg-core.wasm`,
-      "application/wasm",
-    );
-    await ffmpeg.load({ coreURL, wasmURL });
+
+    const tryLoad = async (mt: boolean) => {
+      const base = ffmpegBaseUrl(mt);
+      const coreURL = await toBlobURL(
+        `${base}/ffmpeg-core.js`,
+        "text/javascript",
+      );
+      const wasmURL = await toBlobURL(
+        `${base}/ffmpeg-core.wasm`,
+        "application/wasm",
+      );
+      const opts: { coreURL: string; wasmURL: string; workerURL?: string } = {
+        coreURL,
+        wasmURL,
+      };
+      if (mt) {
+        opts.workerURL = await toBlobURL(
+          `${base}/ffmpeg-core.worker.js`,
+          "text/javascript",
+        );
+      }
+      await ffmpeg.load(opts);
+    };
+
+    if (useMtRef.current) {
+      try {
+        await tryLoad(true);
+        return ffmpeg;
+      } catch (err) {
+        console.warn(
+          "[Speed+-] MT ffmpeg core failed to load, falling back to single-thread:",
+          err,
+        );
+        useMtRef.current = false;
+      }
+    }
+    await tryLoad(false);
     return ffmpeg;
   };
 
+  // Initialize the engine pool. Engines load in parallel so startup time
+  // is roughly the same as loading one engine.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const ffmpeg = await loadFreshFFmpeg();
+    const slots: EngineSlot[] = Array.from(
+      { length: ENGINE_POOL_SIZE },
+      (_, i) => ({
+        id: i,
+        ffmpeg: null,
+        jobsSinceRecycle: 0,
+        busy: false,
+        loading: null,
+        progressCb: null,
+      }),
+    );
+    slotsRef.current = slots;
+
+    Promise.all(
+      slots.map(async (slot) => {
+        const ff = await loadFreshFFmpeg(slot);
+        slot.ffmpeg = ff;
+      }),
+    )
+      .then(() => {
         if (cancelled) return;
-        ffmpegRef.current = ffmpeg;
         setFfmpegReady(true);
         setFfmpegLoading(false);
-      } catch (err) {
+      })
+      .catch((err) => {
         if (cancelled) return;
         console.error(err);
         setFfmpegLoading(false);
         setFfmpegError("Failed to load video engine. Please refresh.");
-      }
-    })();
+      });
+
     return () => {
       cancelled = true;
+      // Best-effort cleanup so a hot-reload doesn't leak workers.
+      for (const s of slots) {
+        const ff = s.ffmpeg;
+        if (ff) {
+          try {
+            ff.terminate();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const setProgressCb = (cb: ((p: number) => void) | null) => {
-    progressCbRef.current = cb;
-  };
-
-  // Force-terminate the current engine and load a fresh one. Returns the
-  // new engine. Concurrent callers share the same in-flight recycle.
-  const recycleEngineNow = async (): Promise<FFmpeg> => {
-    if (recyclingRef.current) return recyclingRef.current;
-    const promise = (async () => {
-      const old = ffmpegRef.current;
-      ffmpegRef.current = null;
-      setFfmpegReady(false);
+  // Force-terminate one slot's engine and load a fresh one in place.
+  const recycleSlot = async (slot: EngineSlot): Promise<void> => {
+    if (slot.loading) {
+      await slot.loading;
+      return;
+    }
+    const old = slot.ffmpeg;
+    slot.ffmpeg = null;
+    slot.loading = (async () => {
       if (old) {
         try {
           old.terminate();
@@ -330,38 +431,45 @@ function VideoCutterApp({
           /* ignore */
         }
       }
-      const fresh = await loadFreshFFmpeg();
-      ffmpegRef.current = fresh;
-      jobsSinceRecycleRef.current = 0;
-      setFfmpegReady(true);
+      const fresh = await loadFreshFFmpeg(slot);
+      slot.ffmpeg = fresh;
+      slot.jobsSinceRecycle = 0;
       return fresh;
     })();
-    recyclingRef.current = promise;
     try {
-      const fresh = await promise;
-      return fresh;
+      await slot.loading;
     } finally {
-      recyclingRef.current = null;
+      slot.loading = null;
     }
   };
 
-  // Each card calls this at the start of a job. If the recycle counter
-  // has hit the threshold, recycle first; otherwise return current engine.
-  const requestEngineForJob = async (): Promise<FFmpeg> => {
-    if (recyclingRef.current) {
-      return recyclingRef.current;
+  // Lease an idle slot. If all are busy, wait until one is released.
+  // Recycles the slot first if it has hit the job-count threshold.
+  const acquireSlot = async (
+    progressCb: (p: number) => void,
+  ): Promise<EngineSlot> => {
+    while (true) {
+      const slots = slotsRef.current;
+      const idle = slots.find((s) => !s.busy && !s.loading);
+      if (idle) {
+        idle.busy = true;
+        idle.progressCb = progressCb;
+        if (!idle.ffmpeg || idle.jobsSinceRecycle >= RECYCLE_EVERY_PP) {
+          await recycleSlot(idle);
+        }
+        return idle;
+      }
+      await new Promise<void>((resolve) => {
+        slotWaitersRef.current.push(resolve);
+      });
     }
-    if (jobsSinceRecycleRef.current >= RECYCLE_EVERY_PP) {
-      return recycleEngineNow();
-    }
-    if (!ffmpegRef.current) {
-      return recycleEngineNow();
-    }
-    return ffmpegRef.current;
   };
 
-  const noteJobDone = () => {
-    jobsSinceRecycleRef.current += 1;
+  const releaseSlot = (slot: EngineSlot) => {
+    slot.busy = false;
+    slot.progressCb = null;
+    const next = slotWaitersRef.current.shift();
+    if (next) next();
   };
 
   const [pool, setPool] = useState<PoolItem[]>([]);
@@ -741,6 +849,8 @@ function VideoCutterApp({
     const pendingArchive: Array<{ idx: number; url: string; name: string }> =
       [];
     try {
+      // Build the queue of cards that should be processed.
+      const queue: number[] = [];
       for (let i = 0; i < numCards; i++) {
         // Read live ref instead of cardStates state — it's up-to-date,
         // even when rAF debouncing hasn't flushed yet.
@@ -750,19 +860,49 @@ function VideoCutterApp({
           (cs.mode === "speedup" || cs.mode === "slowdown") &&
           cardRefs.current[i]
         ) {
-          const result = await cardRefs.current[i]!.runCut();
+          queue.push(i);
+        }
+      }
+
+      // Spin up POOL_SIZE workers that pull cards off a shared cursor.
+      // Each worker leases one engine slot at a time inside runCut, so
+      // we never exceed pool capacity. Order of completion may differ
+      // from queue order, which is fine — archiveBatch keys by idx.
+      let cursor = 0;
+      const archiveLock = { busy: false };
+      const tryFlushArchive = async () => {
+        if (pendingArchive.length < BATCH_SIZE_PP) return;
+        if (archiveLock.busy) return;
+        archiveLock.busy = true;
+        try {
+          await archiveBatch(pendingArchive.splice(0));
+        } finally {
+          archiveLock.busy = false;
+        }
+      };
+
+      const worker = async () => {
+        while (true) {
+          const myIdx = cursor++;
+          if (myIdx >= queue.length) return;
+          const cardIdx = queue[myIdx];
+          const result = await cardRefs.current[cardIdx]!.runCut();
           if (result) {
             pendingArchive.push({
-              idx: i,
+              idx: cardIdx,
               url: result.url,
               name: result.name,
             });
-            if (pendingArchive.length >= BATCH_SIZE_PP) {
-              await archiveBatch(pendingArchive.splice(0));
-            }
+            await tryFlushArchive();
           }
         }
-      }
+      };
+
+      const workerCount = Math.max(1, Math.min(ENGINE_POOL_SIZE, queue.length));
+      await Promise.all(
+        Array.from({ length: workerCount }, () => worker()),
+      );
+
       if (pendingArchive.length > 0) {
         await archiveBatch(pendingArchive.splice(0));
       }
@@ -1004,12 +1144,10 @@ function VideoCutterApp({
                 cardRefs.current[i] = el;
               }}
               index={i + 1}
-              ffmpeg={ffmpegRef.current}
               engineReady={ffmpegReady}
-              setProgressCb={setProgressCb}
-              requestEngineForJob={requestEngineForJob}
-              recycleEngineNow={recycleEngineNow}
-              noteJobDone={noteJobDone}
+              acquireSlot={acquireSlot}
+              releaseSlot={releaseSlot}
+              recycleSlot={recycleSlot}
               onStateChange={setCardState}
               onDownload={incrementDownload}
               highlight={cardStates[i]?.isWorking}
@@ -1247,14 +1385,17 @@ function PoolItemCard({
   );
 }
 
+type EngineLease = {
+  ffmpeg: FFmpeg | null;
+  jobsSinceRecycle: number;
+};
+
 type CutterCardProps = {
   index: number;
-  ffmpeg: FFmpeg | null;
   engineReady: boolean;
-  setProgressCb: (cb: ((p: number) => void) | null) => void;
-  requestEngineForJob: () => Promise<FFmpeg>;
-  recycleEngineNow: () => Promise<FFmpeg>;
-  noteJobDone: () => void;
+  acquireSlot: (cb: (p: number) => void) => Promise<EngineLease>;
+  releaseSlot: (slot: EngineLease) => void;
+  recycleSlot: (slot: EngineLease) => Promise<void>;
   onStateChange: (slotIdx: number, s: CardState) => void;
   onDownload: () => void;
   highlight?: boolean;
@@ -1264,12 +1405,10 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
   function CutterCard(
     {
       index,
-      ffmpeg,
       engineReady,
-      setProgressCb,
-      requestEngineForJob,
-      recycleEngineNow,
-      noteJobDone,
+      acquireSlot,
+      releaseSlot,
+      recycleSlot,
       onStateChange,
       onDownload,
       highlight,
@@ -1368,7 +1507,6 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
 
     const canCut =
       engineReady &&
-      !!ffmpeg &&
       !!audioFile &&
       !!videoFile &&
       videoDuration !== null &&
@@ -1468,7 +1606,9 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
       const mergedFile = `${ns}${mergedFileName}`;
       const mimeType = "video/mp4";
 
-      setProgressCb((p) => setProgress(p));
+      // Lease an engine slot for this job. progress events from this slot's
+      // ffmpeg instance will route to our setProgress callback only.
+      const slot = await acquireSlot((p) => setProgress(p));
 
       // Cache video bytes once so a retry after recycle does not re-read the
       // File (still OK if it does — just an optimization).
@@ -1490,6 +1630,10 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
         // Output duration ≈ videoDuration * factor = audioDuration.
         // Re-encode with libx264 (stream copy can't change timestamps).
         // -an drops audio (output is video-only by design).
+        // Preset `ultrafast` + crf 26 prioritizes encode speed over file
+        // size — for short 12-15s clips, the size delta is negligible
+        // (~30-40%) but encode time drops ~40-50% vs `veryfast`.
+        // -threads 0 lets MT core saturate all CPU cores; ignored by ST.
         const ptsExpr = `${speedFactor.toFixed(6)}*PTS`;
         await eng.exec([
           "-i",
@@ -1502,11 +1646,15 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
           "-c:v",
           "libx264",
           "-preset",
-          "veryfast",
+          "ultrafast",
+          "-tune",
+          "fastdecode",
           "-crf",
-          "23",
+          "26",
           "-pix_fmt",
           "yuv420p",
+          "-threads",
+          "0",
           "-movflags",
           "+faststart",
           mergedFile,
@@ -1537,24 +1685,22 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
       };
 
       try {
-        // Get an engine — may recycle automatically if counter is at threshold.
-        let eng = await requestEngineForJob();
         try {
-          await doWork(eng);
-          noteJobDone();
+          await doWork(slot.ffmpeg!);
+          slot.jobsSinceRecycle += 1;
         } catch (e) {
           const msg = (e as Error).message || String(e);
           if (isMemoryError(msg)) {
-            // Recycle and retry once. WASM heap is reset, so pressure drops.
+            // Recycle this slot and retry once. WASM heap is reset.
             console.warn(
-              `[Cutting++ card ${index}] Memory error, recycling engine and retrying:`,
+              `[Speed+- card ${index}] Memory error, recycling slot and retrying:`,
               msg,
             );
             try {
-              eng = await recycleEngineNow();
+              await recycleSlot(slot);
             } catch (loadErr) {
               console.error(
-                `[Cutting++ card ${index}] Recycle load failed:`,
+                `[Speed+- card ${index}] Recycle load failed:`,
                 loadErr,
               );
               throw e;
@@ -1562,8 +1708,8 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
             // Reset the produced markers — the retry rebuilds the output.
             producedUrl = null;
             producedName = "";
-            await doWork(eng);
-            noteJobDone();
+            await doWork(slot.ffmpeg!);
+            slot.jobsSinceRecycle = 1;
           } else {
             throw e;
           }
@@ -1581,7 +1727,7 @@ const CutterCard = forwardRef<CutterCardHandle, CutterCardProps>(
         }
         return null;
       } finally {
-        setProgressCb(null);
+        releaseSlot(slot);
       }
 
       if (producedUrl && producedName) {
