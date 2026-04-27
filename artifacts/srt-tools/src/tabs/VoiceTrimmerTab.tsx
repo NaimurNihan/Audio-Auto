@@ -10,7 +10,7 @@ type SplitStage = "idle" | "preview" | "trimming" | "done";
 
 interface VoiceTrimmerTabProps {
   onSendToCutting?: (files: File[]) => void;
-  incomingAudioFiles?: { files: File[]; key: number };
+  incomingAudioFiles?: { files: File[]; key: number; autoSplit?: boolean };
 }
 
 export default function VoiceTrimmerTab({ onSendToCutting, incomingAudioFiles }: VoiceTrimmerTabProps = {}) {
@@ -20,6 +20,8 @@ export default function VoiceTrimmerTab({ onSendToCutting, incomingAudioFiles }:
   const lastIncomingKeyRef = useRef<number | null>(null);
   const audioFilesRef = useRef(audioFiles);
   audioFilesRef.current = audioFiles;
+  const autoSplitPendingRef = useRef<{ key: number; expected: number } | null>(null);
+  const autoSplitConfirmTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!incomingAudioFiles || incomingAudioFiles.files.length === 0) return;
@@ -30,7 +32,37 @@ export default function VoiceTrimmerTab({ onSendToCutting, incomingAudioFiles }:
     setLoaded(false);
     audioFilesRef.current.forEach((f) => removeFile(f.id));
     addFiles(incomingAudioFiles.files);
+    if (incomingAudioFiles.autoSplit) {
+      autoSplitPendingRef.current = {
+        key: incomingAudioFiles.key,
+        expected: incomingAudioFiles.files.length,
+      };
+    }
   }, [incomingAudioFiles, addFiles, removeFile, resetTrim]);
+
+  useEffect(() => {
+    const pending = autoSplitPendingRef.current;
+    if (!pending) return;
+    if (splitStage !== "idle") return;
+    const readyNow = audioFiles.filter((f) => f.status === "ready" && !f.isTrimmed).length;
+    if (readyNow < pending.expected) return;
+    autoSplitPendingRef.current = null;
+    setSplitStage("preview");
+    autoSplitConfirmTimerRef.current = window.setTimeout(async () => {
+      autoSplitConfirmTimerRef.current = null;
+      setSplitStage("trimming");
+      await trimAllFiles();
+      setSplitStage("done");
+    }, 5000);
+  }, [audioFiles, splitStage, trimAllFiles]);
+
+  useEffect(() => {
+    return () => {
+      if (autoSplitConfirmTimerRef.current !== null) {
+        window.clearTimeout(autoSplitConfirmTimerRef.current);
+      }
+    };
+  }, []);
 
   const readyCount = audioFiles.filter((f) => f.status === "ready" && !f.isTrimmed).length;
   const trimmedCount = audioFiles.filter((f) => f.isTrimmed).length;
