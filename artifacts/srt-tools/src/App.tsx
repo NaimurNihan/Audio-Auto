@@ -2,75 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import SrtNoteTab from "@/tabs/SrtNoteTab";
 import VoiceTrimmerTab from "@/tabs/VoiceTrimmerTab";
 import AiAudioTab from "@/tabs/AiAudioTab";
-import CuttingPlusTab from "@/tabs/CuttingPlusTab";
-import CuttingPlusPlusTab from "@/tabs/CuttingPlusPlusTab";
-import SrtMakerTab from "@/tabs/SrtMakerTab";
-import SrtMergerTab from "@/tabs/SrtMergerTab";
-import SrtEditorTab from "@/tabs/SrtEditorTab";
-import SrtEditTab from "@/tabs/SrtEditTab";
-import SrtConverterTab from "@/tabs/SrtConverterTab";
-import SrtTimeSplitterTab from "@/tabs/SrtTimeSplitterTab";
-import TextSplitterTab from "@/tabs/TextSplitterTab";
-import CounterTab from "@/tabs/CounterTab";
-import type { Subtitle } from "@/lib/srt";
 
-type Tab =
-  | "note"
-  | "aiAudio"
-  | "audio"
-  | "cuttingPlus"
-  | "cuttingPlusPlus"
-  | "srtMaker"
-  | "srtMerger"
-  | "srtEditor"
-  | "srtEdit"
-  | "srtConverter"
-  | "srtTimeSplitter"
-  | "textSplitter"
-  | "counter";
+type Tab = "note" | "aiAudio" | "audio";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "note", label: "SRT Note" },
   { id: "aiAudio", label: "Ai Audio" },
   { id: "audio", label: "Audio Spliter" },
-  { id: "cuttingPlus", label: "Cutting+" },
-  { id: "cuttingPlusPlus", label: "Cutting++" },
-  { id: "srtMaker", label: "SRT Maker" },
-  { id: "srtMerger", label: "SRT Merger" },
-  { id: "srtEditor", label: "SRT Editor" },
-  { id: "srtEdit", label: "SRT Edit" },
-  { id: "srtConverter", label: "SRT Converter" },
-  { id: "srtTimeSplitter", label: "SRT Time Splitter" },
-  { id: "textSplitter", label: "Text Splitter" },
-  { id: "counter", label: "Counter" },
 ];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("note");
-  const [noteIncomingText, setNoteIncomingText] = useState("");
-  const [noteIncomingName, setNoteIncomingName] = useState("");
-  const [noteIncomingKey, setNoteIncomingKey] = useState(0);
   const [spliterIncomingAudio, setSpliterIncomingAudio] = useState<{
     files: File[];
     key: number;
     autoSplit?: boolean;
   }>({ files: [], key: 0 });
-  const [cuttingPlusIncomingVideos, setCuttingPlusIncomingVideos] = useState<{
-    files: File[];
-    key: number;
-  }>({ files: [], key: 0 });
-  const [cuttingPlusPlusIncomingAudio, setCuttingPlusPlusIncomingAudio] = useState<{
-    files: File[];
-    key: number;
-  }>({ files: [], key: 0 });
-  const [timeSplitterIncoming, setTimeSplitterIncoming] = useState<{
-    srt: string;
-    filename: string;
-    key: number;
-  }>({ srt: "", filename: "", key: 0 });
-
-  const [sharedSubtitles, setSharedSubtitles] = useState<Subtitle[]>([]);
-  const [sharedFilename, setSharedFilename] = useState<string>("");
 
   const autoRunRef = useRef(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -162,9 +109,9 @@ export default function App() {
         className="flex-col flex-1 overflow-hidden"
       >
         <SrtNoteTab
-          incomingText={noteIncomingText}
-          incomingName={noteIncomingName}
-          incomingKey={noteIncomingKey}
+          incomingText=""
+          incomingName=""
+          incomingKey={0}
           onRunToAiAudio={(lines, label) => {
             autoRunRef.current = true;
             window.dispatchEvent(
@@ -203,136 +150,7 @@ export default function App() {
         style={{ display: activeTab === "audio" ? "flex" : "none" }}
         className="flex-col flex-1 overflow-y-auto"
       >
-        <VoiceTrimmerTab
-          incomingAudioFiles={spliterIncomingAudio}
-          onSendToCutting={(files) => {
-            setCuttingPlusPlusIncomingAudio({ files, key: Date.now() });
-            handleSelectTab("cuttingPlusPlus");
-          }}
-        />
-      </div>
-
-      {/* Cutting+ */}
-      <div
-        style={{ display: activeTab === "cuttingPlus" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <CuttingPlusTab
-          incomingVideoFiles={cuttingPlusIncomingVideos}
-          onSendToCuttingPlusPlus={(files) => {
-            setCuttingPlusPlusIncomingAudio({ files, key: Date.now() });
-            handleSelectTab("cuttingPlusPlus");
-          }}
-        />
-      </div>
-
-      {/* Cutting++ */}
-      <div
-        style={{ display: activeTab === "cuttingPlusPlus" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <CuttingPlusPlusTab incomingAudioFiles={cuttingPlusPlusIncomingAudio} />
-      </div>
-
-      {/* SRT Maker */}
-      <div
-        style={{ display: activeTab === "srtMaker" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <SrtMakerTab />
-      </div>
-
-      {/* SRT Merger */}
-      <div
-        style={{ display: activeTab === "srtMerger" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <SrtMergerTab
-          setSubtitles={setSharedSubtitles}
-          setFilename={setSharedFilename}
-          onGenerated={() => handleSelectTab("srtEditor")}
-          onTransform={() => handleSelectTab("srtEditor")}
-        />
-      </div>
-
-      {/* SRT Editor */}
-      <div
-        style={{ display: activeTab === "srtEditor" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <SrtEditorTab
-          subtitles={sharedSubtitles}
-          filename={sharedFilename}
-          setSubtitles={setSharedSubtitles}
-          setFilename={setSharedFilename}
-          onNext={() => handleSelectTab("srtEdit")}
-        />
-      </div>
-
-      {/* SRT Edit */}
-      <div
-        style={{ display: activeTab === "srtEdit" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <SrtEditTab
-          subtitles={sharedSubtitles}
-          filename={sharedFilename}
-          setSubtitles={setSharedSubtitles}
-          setFilename={setSharedFilename}
-        />
-      </div>
-
-      {/* SRT Converter */}
-      <div
-        style={{ display: activeTab === "srtConverter" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <SrtConverterTab
-          sharedSubtitles={sharedSubtitles}
-          sharedFilename={sharedFilename}
-        />
-      </div>
-
-      {/* SRT Time Splitter */}
-      <div
-        style={{ display: activeTab === "srtTimeSplitter" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <SrtTimeSplitterTab
-          incomingSrt={timeSplitterIncoming.srt}
-          incomingFilename={timeSplitterIncoming.filename}
-          incomingKey={timeSplitterIncoming.key}
-          onSendToNote={(text, sourceName) => {
-            setNoteIncomingText(text);
-            setNoteIncomingName(sourceName);
-            setNoteIncomingKey(Date.now());
-            handleSelectTab("note");
-          }}
-        />
-      </div>
-
-      {/* Text Splitter */}
-      <div
-        style={{ display: activeTab === "textSplitter" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <TextSplitterTab
-          editorSubtitles={sharedSubtitles}
-          editorFilename={sharedFilename}
-        />
-      </div>
-
-      {/* Counter */}
-      <div
-        style={{ display: activeTab === "counter" ? "flex" : "none" }}
-        className="flex-col flex-1 overflow-y-auto"
-      >
-        <CounterTab
-          subtitles={sharedSubtitles}
-          filename={sharedFilename}
-          setSubtitles={setSharedSubtitles}
-          setFilename={setSharedFilename}
-        />
+        <VoiceTrimmerTab incomingAudioFiles={spliterIncomingAudio} />
       </div>
     </div>
   );
