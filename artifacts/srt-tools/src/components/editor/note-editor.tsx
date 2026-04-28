@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, KeyboardEvent, useMemo } from "react";
-import { Copy, Scissors, Undo, Play, Square, Loader2, Download, ListMusic, RotateCcw, CloudDownload, Music, X, FolderInput, Lock, Unlock, Star } from "lucide-react";
+import { Copy, Scissors, Undo, Play, Square, Loader2, Download, ListMusic, RotateCcw, CloudDownload, Music, X, FolderInput, Lock, Unlock, Star, Mic, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1213,15 +1213,11 @@ export function Editor({ onSendToSpliter }: EditorProps = {}) {
     <div className="flex flex-col h-full max-w-4xl mx-auto w-full p-6 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
       {/* Top card: AI Voice slots + voice picker */}
       <div className="bg-card border border-border rounded-xl shadow-sm px-4 py-2.5 flex flex-col gap-2">
-        {/* Row 1: AI Voice label on the left, voice picker + favorites on the right */}
-        <div className="flex items-center justify-between gap-2">
+        {/* Row 1: AI Voice label */}
+        <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-foreground tracking-wide shrink-0">AI Voice</span>
-          <div className="flex items-center gap-2">
-            <VoicePicker selectedVoice={selectedVoice} onSelect={handleVoiceSelect} />
-            <FavoriteVoicesButton selectedVoice={selectedVoice} onSelect={handleVoiceSelect} />
-          </div>
         </div>
-        {/* Row 2: Slot pills */}
+        {/* Row 2: Slot pills + compact voice picker + compact favorites */}
         <div className="flex items-center gap-2 flex-wrap min-w-0">
           {voiceSlotLabels.map((slotLabel, i) => {
             const trimmed = slotLabel.trim();
@@ -1251,6 +1247,30 @@ export function Editor({ onSendToSpliter }: EditorProps = {}) {
               />
             );
           })}
+          <VoicePicker
+            selectedVoice={selectedVoice}
+            onSelect={handleVoiceSelect}
+            trigger={
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 px-2 max-w-[200px] truncate text-[10px] font-semibold uppercase tracking-wider rounded-md"
+                data-testid="button-voice-picker"
+              >
+                <Mic className="h-3 w-3 shrink-0 text-primary" />
+                <span className="truncate normal-case tracking-normal font-medium text-[11px]">
+                  {selectedVoice ? selectedVoice.split("-").slice(-1)[0].replace(/Neural$/, "") : "Auto"}
+                </span>
+                <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+              </Button>
+            }
+          />
+          <FavoriteVoicesButton
+            selectedVoice={selectedVoice}
+            onSelect={handleVoiceSelect}
+            className="h-7 w-7 relative rounded-md"
+            iconClassName="h-3.5 w-3.5"
+          />
         </div>
       </div>
 
