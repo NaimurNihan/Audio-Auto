@@ -3,7 +3,7 @@ import { useAudioAnalysis } from "@/hooks/useAudioAnalysis";
 import UploadBox from "@/tabs/trimmer/UploadBox";
 import AudioCard from "@/tabs/trimmer/AudioCard";
 import DownloadPanel from "@/tabs/trimmer/DownloadPanel";
-import { Scissors, Trash2, FolderInput, Download } from "lucide-react";
+import { Scissors, Trash2, FolderInput, Download, Check } from "lucide-react";
 import JSZip from "jszip";
 
 type SplitStage = "idle" | "preview" | "trimming" | "done";
@@ -17,6 +17,8 @@ export default function VoiceTrimmerTab({ onSendToCutting, incomingAudioFiles }:
   const { audioFiles, addFiles, removeFile, trimAllFiles, resetTrim } = useAudioAnalysis();
   const [splitStage, setSplitStage] = useState<SplitStage>("idle");
   const [loaded, setLoaded] = useState(false);
+  const [zipDownloaded, setZipDownloaded] = useState(false);
+  const [zipAnimating, setZipAnimating] = useState(false);
   const lastIncomingKeyRef = useRef<number | null>(null);
   const audioFilesRef = useRef(audioFiles);
   audioFilesRef.current = audioFiles;
@@ -81,12 +83,15 @@ export default function VoiceTrimmerTab({ onSendToCutting, incomingAudioFiles }:
     resetTrim();
     setSplitStage("idle");
     setLoaded(false);
+    setZipDownloaded(false);
+    setZipAnimating(false);
     audioFiles.forEach((f) => removeFile(f.id));
   };
 
   const handleDownloadZip = async () => {
     const trimmed = audioFiles.filter((f) => f.isTrimmed && f.trimmedBlob);
     if (trimmed.length === 0) return;
+    setZipAnimating(true);
     const zip = new JSZip();
     for (const f of trimmed) {
       const baseName = f.name.replace(/\.[^.]+$/, "") + "_trimmed.wav";
@@ -101,6 +106,8 @@ export default function VoiceTrimmerTab({ onSendToCutting, incomingAudioFiles }:
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    setZipDownloaded(true);
+    window.setTimeout(() => setZipAnimating(false), 700);
   };
 
   const handleLoadToCutting = () => {
@@ -153,15 +160,41 @@ export default function VoiceTrimmerTab({ onSendToCutting, incomingAudioFiles }:
           {splitStage === "done" && trimmedCount > 0 && (
             <button
               onClick={handleDownloadZip}
-              title={`Download all ${trimmedCount} trimmed audios as ZIP`}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition-all"
+              title={
+                zipDownloaded
+                  ? "ZIP downloaded — click to download again"
+                  : `Download all ${trimmedCount} trimmed audios as ZIP`
+              }
+              className="zip-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white"
               style={{
-                background: "linear-gradient(90deg, hsl(265,85%,58%), hsl(295,85%,55%))",
-                boxShadow: "0 1px 4px rgba(168,85,247,0.30)",
+                background: zipDownloaded
+                  ? "linear-gradient(90deg, hsl(142,72%,42%), hsl(155,75%,40%))"
+                  : "linear-gradient(90deg, hsl(265,85%,58%), hsl(295,85%,55%))",
+                boxShadow: zipDownloaded
+                  ? "0 2px 10px rgba(34,197,94,0.45)"
+                  : "0 1px 4px rgba(168,85,247,0.30)",
+                transform: zipAnimating ? "scale(0.92)" : "scale(1)",
+                transition:
+                  "transform 0.18s cubic-bezier(0.34,1.56,0.64,1), background 0.35s ease, box-shadow 0.35s ease",
+                animation: zipAnimating ? "zipPulse 0.7s ease" : undefined,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = zipAnimating
+                  ? "scale(0.92)"
+                  : "scale(1.06)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = zipAnimating
+                  ? "scale(0.92)"
+                  : "scale(1)";
               }}
             >
-              <Download className="w-3 h-3" />
-              ZIP
+              {zipDownloaded ? (
+                <Check className="w-3 h-3" />
+              ) : (
+                <Download className="w-3 h-3" />
+              )}
+              {zipDownloaded ? "ZIP ✓" : "ZIP"}
             </button>
           )}
           {splitStage === "done" && trimmedCount > 0 && onSendToCutting && (
