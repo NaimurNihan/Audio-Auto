@@ -1212,9 +1212,17 @@ export function Editor({ onSendToSpliter }: EditorProps = {}) {
   return (
     <div className="flex flex-col h-full max-w-4xl mx-auto w-full p-6 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
       {/* Top card: AI Voice slots + voice picker */}
-      <div className="bg-card border border-border rounded-xl shadow-sm px-4 py-2.5 flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+      <div className="bg-card border border-border rounded-xl shadow-sm px-4 py-2.5 flex flex-col gap-2">
+        {/* Row 1: AI Voice label on the left, voice picker + favorites on the right */}
+        <div className="flex items-center justify-between gap-2">
           <span className="text-sm font-semibold text-foreground tracking-wide shrink-0">AI Voice</span>
+          <div className="flex items-center gap-2">
+            <VoicePicker selectedVoice={selectedVoice} onSelect={handleVoiceSelect} />
+            <FavoriteVoicesButton selectedVoice={selectedVoice} onSelect={handleVoiceSelect} />
+          </div>
+        </div>
+        {/* Row 2: Slot pills */}
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
           {voiceSlotLabels.map((slotLabel, i) => {
             const trimmed = slotLabel.trim();
             const slotVoice = trimmed ? findVoiceForLabel(trimmed, voiceByLabel) : null;
@@ -1243,10 +1251,6 @@ export function Editor({ onSendToSpliter }: EditorProps = {}) {
               />
             );
           })}
-        </div>
-        <div className="flex items-center gap-2">
-          <VoicePicker selectedVoice={selectedVoice} onSelect={handleVoiceSelect} />
-          <FavoriteVoicesButton selectedVoice={selectedVoice} onSelect={handleVoiceSelect} />
         </div>
       </div>
 
